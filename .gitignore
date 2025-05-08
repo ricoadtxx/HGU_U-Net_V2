@@ -1,0 +1,15 @@
+.idea/
+__pycache__/
+
+dataset_new/
+label_raster_output/
+model/
+unknown/
+
+*.tif
+*.qgz
+*.cpg
+*.dbf
+*.prj
+*.shp
+*.shx
