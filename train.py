@@ -19,7 +19,7 @@ from losses import jaccard_coef
 os.environ["SM_FRAMEWORK"] = "tf.keras"
 dataset = 'dataset_new/'
 dataset_name = 'DBX'
-image_patch_size = 128
+image_patch_size = 256
 num_classes = 5
 
 def normalize_image(image):
