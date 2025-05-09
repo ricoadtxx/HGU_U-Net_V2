@@ -13,7 +13,7 @@ import geopandas as gpd
 
 # Konfigurasi awal
 os.environ["SM_FRAMEWORK"] = "tf.keras"
-image_patch_size = 256
+image_patch_size = 128
 num_classes = 5
 
 def normalize_image(image):
@@ -138,35 +138,6 @@ def calculate_area_from_shapefile(shapefile_path):
 
     return area_by_class
 
-def visualize_results(input_image_path, segmented_image, class_names, color_list, save_path=None):
-    input_img = rasterio.open(input_image_path).read([1, 2, 3])
-    input_img = np.transpose(input_img, (1, 2, 0)).astype(np.uint8)
-
-    fig, ax = plt.subplots(1, 2, figsize=(16, 8))
-
-    ax[0].imshow(input_img)
-    ax[0].set_title("Citra Input")
-    ax[0].axis("off")
-
-    ax[1].imshow(segmented_image)
-    ax[1].set_title("Hasil Segmentasi")
-    ax[1].axis("off")
-
-    # Tambah legenda
-    patches = [plt.plot([], [], marker="s", ms=10, ls="", mec=None,
-                        color=np.array(c)/255.0,
-                        label="{:s}".format(name))[0]
-               for c, name in zip(color_list, class_names)]
-    fig.legend(handles=patches, loc='lower center', ncol=len(class_names), fontsize='large')
-
-    plt.tight_layout(rect=[0, 0.05, 1, 1])
-
-    if save_path:
-        plt.savefig(save_path, dpi=300)
-        print(f"Visualisasi disimpan ke {save_path}")
-
-    plt.show()
-
 def main():
     parser = argparse.ArgumentParser(description='Prediksi segmentasi gambar menggunakan model U-Net')
     parser.add_argument('--model', type=str, required=True, help='Path ke model terlatih (.h5)')
@@ -199,9 +170,6 @@ def main():
     save_shapefile_from_label(label_map, args.input, shp_output_path, class_names)
 
     calculate_area_from_shapefile(shp_output_path)
-
-    visualization_output = os.path.splitext(args.output)[0] + '_viz.png'
-    visualize_results(args.input, segmented_image, class_names, color_list, save_path=visualization_output)
 
 if __name__ == "__main__":
     main()
