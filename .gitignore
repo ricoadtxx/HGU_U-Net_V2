@@ -5,6 +5,7 @@ dataset_new/
 label_raster_output/
 model/
 unknown/
+sample/
 
 *.tif
 *.qgz
@@ -13,3 +14,7 @@ unknown/
 *.prj
 *.shp
 *.shx
+
+tf_color.py
+augmentasi.py
+cek_data.py
