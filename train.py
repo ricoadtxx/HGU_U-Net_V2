@@ -1,12 +1,12 @@
 import os
 import numpy as np
 from sklearn.model_selection import train_test_split
-from tensorflow.keras.optimizers import Nadam
+from tensorflow.keras.optimizers import Adam
 from tensorflow.keras.callbacks import ModelCheckpoint, ReduceLROnPlateau
 import segmentation_models as sm
 
 
-from model import multi_unet_model
+from model import multi_unet_model_with_combined_attention
 from losses import jaccard_coef
 from processing import load_dataset, preprocess_masks, data_generator
 from visualization import visualize_sample_data, plot_training_results, visualize_predict, show_augmentation
@@ -20,35 +20,30 @@ def train_model(epochs=EPOCHS, batch_size=BATCH_SIZE, valid_threshold=VALID_THRE
     os.makedirs('report', exist_ok=True)
     os.makedirs('model', exist_ok=True)
 
-    # Load and preprocess data
     image_dataset, mask_dataset, validity_masks = load_dataset(valid_threshold)
     labels = preprocess_masks(mask_dataset, num_classes=NUM_CLASSES)
 
-    # Visualisasi data awal
+    print("Class Weights:", CLASS_WEIGHTS)
+
     visualize_sample_data(image_dataset, labels, validity_mask=validity_masks, num_samples=3)
     show_augmentation(image_dataset, labels, validity_masks, num_samples=1)
 
-    # Model dan loss
-    model = multi_unet_model(n_classes=NUM_CLASSES, 
+    model = multi_unet_model_with_combined_attention(n_classes=NUM_CLASSES, 
                             image_height=IMAGE_PATCH_SIZE, 
                             image_width=IMAGE_PATCH_SIZE,
                             image_channels=3)
     
     metrics = ['accuracy', jaccard_coef]
     
-    # Handle case if segmentation_models not installed or has compatibility issues
     try:
-        # Coba beberapa alternatif untuk menggunakan class_weights
-        # Alternatif 1: Gunakan parameter yang tersedia di versi segmentation_models Anda
         try:
             dice_loss = sm.losses.DiceLoss()
-            focal_loss = sm.losses.CategoricalFocalLoss()
+            focal_loss = sm.losses.CategoricalFocalLoss(gamma=2.0)
             total_loss = dice_loss + focal_loss
-            print("Using default DiceLoss + CategoricalFocalLoss")
+            print("Using DiceLoss + CategoricalFocalLoss with class weights:", CLASS_WEIGHTS)
         except Exception as e1:
             print(f"Failed to create combined loss: {e1}")
             
-            # Alternatif 2: Coba gunakan binary_crossentropy + dice_loss
             try:
                 total_loss = 'categorical_crossentropy'
                 print("Using categorical_crossentropy as loss")
@@ -60,7 +55,7 @@ def train_model(epochs=EPOCHS, batch_size=BATCH_SIZE, valid_threshold=VALID_THRE
         total_loss = 'categorical_crossentropy'
 
     model.compile(
-        optimizer=Nadam(learning_rate=LEARNING_RATE),
+        optimizer=Adam(learning_rate=LEARNING_RATE),
         loss=total_loss,
         metrics=metrics
     )
@@ -68,8 +63,8 @@ def train_model(epochs=EPOCHS, batch_size=BATCH_SIZE, valid_threshold=VALID_THRE
     X_train, X_test, y_train, y_test = train_test_split(image_dataset, labels, test_size=0.2, random_state=42)
 
     callbacks = [
-        ModelCheckpoint(BEST_MODEL_PATH, monitor='val_loss', save_best_only=True, mode='min'),
-        ReduceLROnPlateau(monitor='val_loss', factor=0.2, patience=5, min_lr=1e-6)
+        ModelCheckpoint(BEST_MODEL_PATH, monitor='val_accuracy', save_best_only=True, mode='max'),
+        # ReduceLROnPlateau(monitor='val_loss', factor=0.2, patience=10, min_lr=1e-6)
     ]
 
     model.summary()

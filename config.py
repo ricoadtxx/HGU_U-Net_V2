@@ -1,16 +1,19 @@
 import datetime
+from class_weights import calculate_class_weights
+
+dataset_dir = "dataset_new/DBX"  # Ganti dengan path dataset kamu
 
 DATA_DIR = "dataset_new/"
 DATA_NAME = "DBX"
-IMAGE_PATCH_SIZE = 128
+IMAGE_PATCH_SIZE = 256
 NUM_CLASSES = 5
 VALID_THRESHOLD = 0.1
-THRESHOLD = 2
+THRESHOLD = 1
 
 BATCH_SIZE = 16
 EPOCHS = 100
-LEARNING_RATE = 1e-4
-CLASS_WEIGHTS = [0.5, 1.0, 2.0, 1.5, 1.0]
+LEARNING_RATE = 0.0005
+CLASS_WEIGHTS = calculate_class_weights(dataset_dir)
 
 TIMESTAMP = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
 BEST_MODEL_PATH = f"model/best_model_{TIMESTAMP}.h5"

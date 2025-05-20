@@ -10,10 +10,13 @@ from losses import jaccard_coef
 from rasterio.features import shapes
 from shapely.geometry import shape, mapping
 import geopandas as gpd
+from scipy.ndimage import generic_filter
+from model import (attention_gate, spatial_attention_module, 
+                          residual_block)
 
 # Konfigurasi awal
 os.environ["SM_FRAMEWORK"] = "tf.keras"
-image_patch_size = 128
+image_patch_size = 256
 num_classes = 5
 
 def normalize_image(image):
@@ -30,17 +33,43 @@ def is_valid_patch(patch, valid_threshold=0.1):
 
 def load_custom_model(model_path):
     dependencies = {
-        'jaccard_coef': jaccard_coef
+        'jaccard_coef': jaccard_coef,
+        'attention_gate': attention_gate,
+        'spatial_attention_module': spatial_attention_module,
+        'residual_block': residual_block
     }
     model = load_model(model_path, custom_objects=dependencies, compile=False)
     return model
 
-def predict_large_image(model, image_path, output_path=None, patch_size=image_patch_size, overlap=64, valid_threshold=0.1):
-    with rasterio.open(image_path) as src:
-        image = src.read([1, 2, 3])
-        image_meta = src.meta
+# def mode_filter(label_map, size=5):
+#     h, w = label_map.shape
+#     result = np.zeros_like(label_map)
+    
+#     pad_size = size // 2
+#     padded = np.pad(label_map, pad_size, mode='reflect')
+    
+#     with tqdm(total=h*w, desc="Smoothing", unit="piksel") as progress_bar:
+#         for i in range(h):
+#             for j in range(w):
+#                 window = padded[i:i+size, j:j+size].flatten()
+#                 vals, counts = np.unique(window, return_counts=True)
+#                 result[i, j] = vals[np.argmax(counts)]
+#                 progress_bar.update(1)
+    
+#     return result
 
-    image_rgb = np.transpose(image, (1, 2, 0))
+# def label_to_rgb(label_map, color_list):
+#     rgb = np.zeros((label_map.shape[0], label_map.shape[1], 3), dtype=np.uint8)
+#     for idx, color in enumerate(color_list):
+#         rgb[label_map == idx] = color
+#     return rgb
+
+def predict_large_image(model, image_path, output_path=None, patch_size=image_patch_size, overlap=128, valid_threshold=0.1):
+    image = cv2.imread(image_path)
+    if image is None:
+        raise ValueError(f"Gambar tidak ditemukan: {image_path}")
+
+    image_rgb = image
     h, w = image_rgb.shape[:2]
     step = patch_size - overlap
 

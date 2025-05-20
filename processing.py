@@ -27,19 +27,30 @@ def load_dataset(valid_threshold=VALID_THRESHOLD):
     for image_type in ['images', 'masking']:
         image_extension = 'jpg' if image_type == 'images' else 'png'
 
-        for tile_id in range(1, 10):
-            for image_id in range(1, 10):
-                image_path = f'{DATA_DIR}{DATA_NAME}/Tile {tile_id}/{image_type}/image_00{image_id}.{image_extension}'
-                if not os.path.exists(image_path):
-                    print(f"Warning: File not found: {image_path}")
-                    continue
-                    
+        tiles_path = os.path.join(DATA_DIR, DATA_NAME)
+        if not os.path.exists(tiles_path):
+            raise FileNotFoundError(f"Dataset directory not found: {tiles_path}")
+
+        # List all 'Tile X' directories
+        tile_dirs = [d for d in os.listdir(tiles_path) if d.startswith("Tile") and os.path.isdir(os.path.join(tiles_path, d))]
+
+        for tile_dir in tile_dirs:
+            image_dir = os.path.join(tiles_path, tile_dir, image_type)
+
+            if not os.path.exists(image_dir):
+                print(f"Warning: Directory not found: {image_dir}")
+                continue
+
+            image_files = [f for f in os.listdir(image_dir) if f.endswith(f'.{image_extension}')]
+
+            for image_file in image_files:
+                image_path = os.path.join(image_dir, image_file)
                 image = cv2.imread(image_path)
 
                 if image is not None:
                     if image_type == 'masking':
                         image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
-                    
+
                     size_x = (image.shape[1] // IMAGE_PATCH_SIZE) * IMAGE_PATCH_SIZE
                     size_y = (image.shape[0] // IMAGE_PATCH_SIZE) * IMAGE_PATCH_SIZE
                     cropped_image = image[:size_y, :size_x]
@@ -57,7 +68,7 @@ def load_dataset(valid_threshold=VALID_THRESHOLD):
                                     image_dataset.append(patch)
                                 else:
                                     mask_dataset.append(patch)
-    
+
     print(f"Loaded {len(image_dataset)} valid patches out of total patches")
     return np.array(image_dataset), np.array(mask_dataset), np.array(validity_masks)
 
