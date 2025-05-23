@@ -4,15 +4,16 @@ import cv2
 import numpy as np
 import matplotlib.pyplot as plt
 import argparse
+
 from tensorflow.keras.models import load_model
 from tqdm import tqdm
 from losses import jaccard_coef
 from rasterio.features import shapes
-from shapely.geometry import shape, mapping
 import geopandas as gpd
-from scipy.ndimage import generic_filter
 from model import (attention_gate, spatial_attention_module, 
                           residual_block)
+
+from nearest_neighbor import postprocess_multiclass_segmentation
 
 # Konfigurasi awal
 os.environ["SM_FRAMEWORK"] = "tf.keras"
@@ -23,8 +24,8 @@ def normalize_image(image):
     return image.astype(np.float32) / 255.0
 
 def create_nodata_mask(image, threshold=2):
-    no_data_mask = ~np.all(image < threshold, axis=-1)
-    return no_data_mask.astype(np.uint8)
+    valid_mask = ~np.all(image < threshold, axis=-1)
+    return valid_mask.astype(np.uint8)
 
 def is_valid_patch(patch, valid_threshold=0.1):
     no_data_mask = np.all(patch < 10, axis=-1)
@@ -41,33 +42,23 @@ def load_custom_model(model_path):
     model = load_model(model_path, custom_objects=dependencies, compile=False)
     return model
 
-# def mode_filter(label_map, size=5):
-#     h, w = label_map.shape
-#     result = np.zeros_like(label_map)
+def predict_large_image(model, image_path, output_path=None, patch_size=image_patch_size, 
+                       overlap=128, valid_threshold=0.1, enable_postprocess=True,
+                       postprocess_params=None):
     
-#     pad_size = size // 2
-#     padded = np.pad(label_map, pad_size, mode='reflect')
+    if postprocess_params is None:
+        postprocess_params = {
+            'min_area': 50,
+            'morph_kernel_size': 2,
+            'fill_holes': True,
+            'smooth_boundaries': True
+        }
     
-#     with tqdm(total=h*w, desc="Smoothing", unit="piksel") as progress_bar:
-#         for i in range(h):
-#             for j in range(w):
-#                 window = padded[i:i+size, j:j+size].flatten()
-#                 vals, counts = np.unique(window, return_counts=True)
-#                 result[i, j] = vals[np.argmax(counts)]
-#                 progress_bar.update(1)
-    
-#     return result
-
-# def label_to_rgb(label_map, color_list):
-#     rgb = np.zeros((label_map.shape[0], label_map.shape[1], 3), dtype=np.uint8)
-#     for idx, color in enumerate(color_list):
-#         rgb[label_map == idx] = color
-#     return rgb
-
-def predict_large_image(model, image_path, output_path=None, patch_size=image_patch_size, overlap=128, valid_threshold=0.1):
     image = cv2.imread(image_path)
     if image is None:
         raise ValueError(f"Gambar tidak ditemukan: {image_path}")
+
+    no_data_mask = create_nodata_mask(image)
 
     image_rgb = image
     h, w = image_rgb.shape[:2]
@@ -88,11 +79,12 @@ def predict_large_image(model, image_path, output_path=None, patch_size=image_pa
     }
     color_list = list(colors.values())
 
-    prediction = np.zeros((padded_h, padded_w, 3), dtype=np.float32)
+    prediction_labels = np.zeros((padded_h, padded_w), dtype=np.float32)
     count_map = np.zeros((padded_h, padded_w), dtype=np.float32)
 
     patch_coords = [(y, x) for y in range(0, padded_h - overlap, step) for x in range(0, padded_w - overlap, step)]
 
+    print("Melakukan prediksi patch...")
     for (y, x) in tqdm(patch_coords, desc="Memproses patch"):
         patch = padded_image[y:y+patch_size, x:x+patch_size]
 
@@ -100,25 +92,38 @@ def predict_large_image(model, image_path, output_path=None, patch_size=image_pa
             patch_norm = normalize_image(patch)
             pred = model.predict(np.expand_dims(patch_norm, axis=0), verbose=0)[0]
             pred_labels = np.argmax(pred, axis=-1)
-            pred_colored = np.zeros((patch_size, patch_size, 3), dtype=np.uint8)
 
-            for i in range(num_classes):
-                pred_colored[pred_labels == i] = color_list[i]
-
-            prediction[y:y+patch_size, x:x+patch_size] += pred_colored
-            count_map[y:y+patch_size, x:x+patch_size] += 1
+            valid_patch_mask = create_nodata_mask(patch)
+            
+            prediction_labels[y:y+patch_size, x:x+patch_size] += pred_labels * valid_patch_mask
+            count_map[y:y+patch_size, x:x+patch_size] += valid_patch_mask
 
     mask = count_map > 0
-    for c in range(3):
-        prediction[:, :, c] = np.divide(prediction[:, :, c], count_map, out=np.zeros_like(prediction[:, :, c]), where=mask)
+    prediction_labels = np.divide(prediction_labels, count_map, 
+                                out=np.zeros_like(prediction_labels), where=mask)
+    
+    prediction_labels = np.round(prediction_labels).astype(np.uint8)
+    
+    prediction_labels = prediction_labels[:h, :w]
 
-    segmented_image = prediction[:h, :w].astype(np.uint8)
+    prediction_labels[no_data_mask == 0] = 255
+    
+    if enable_postprocess:
+        print("Melakukan post-processing...")
+        prediction_labels = postprocess_multiclass_segmentation(
+            prediction_labels, no_data_mask=no_data_mask, **postprocess_params
+        )
+        print("Post-processing selesai!")
+    
+    segmented_image = np.zeros((h, w, 3), dtype=np.uint8)
+    for i in range(num_classes):
+        segmented_image[prediction_labels == i] = color_list[i]
 
     if output_path:
         cv2.imwrite(output_path, cv2.cvtColor(segmented_image, cv2.COLOR_RGB2BGR))
         print(f"Hasil segmentasi disimpan ke {output_path}")
 
-    return segmented_image
+    return segmented_image, prediction_labels
 
 def rgb_to_label(segmented_rgb, color_list):
     label_map = np.zeros(segmented_rgb.shape[:2], dtype=np.uint8)
@@ -139,10 +144,15 @@ def save_shapefile_from_label(label_map, reference_image_path, shp_output_path, 
         transform = src.transform
         crs = src.crs
 
+    label_map_clean = np.copy(label_map)
+    label_map_clean[label_map_clean == 255] = 0
+    valid_mask = label_map != 255
+
     results = (
-        {'properties': {'class_id': v}, 'geometry': s}
-        for s, v in shapes(label_map, mask=label_map > 0, transform=transform)
+        {'properties': {'class_id': int(v)}, 'geometry': s}
+        for s, v in shapes(label_map_clean, mask=valid_mask, transform=transform)
     )
+
     geoms = list(results)
     if not geoms:
         print("Tidak ada geometri yang berhasil diekstrak.")
@@ -150,7 +160,13 @@ def save_shapefile_from_label(label_map, reference_image_path, shp_output_path, 
 
     gdf = gpd.GeoDataFrame.from_features(geoms, crs=crs)
     gdf['class_name'] = gdf['class_id'].map(lambda x: class_names[int(x)] if not np.isnan(x) and int(x) < len(class_names) else "Unknown")
-    gdf.to_file(shp_output_path)
+
+    print("Melakukan dissolve berdasarkan class_name...")
+    gdf_dissolve = gdf.dissolve(by='class_name', aggfunc='first').reset_index()
+
+    gdf_dissolve['luas_ha'] = gdf_dissolve.geometry.area / 10000.0
+
+    gdf_dissolve.to_file(shp_output_path)
     print(f"Shapefile disimpan ke {shp_output_path}")
 
 def calculate_area_from_shapefile(shapefile_path):
@@ -196,29 +212,47 @@ def visualize_results(input_image_path, segmented_image, class_names, color_list
     plt.show()
 
 def main():
-    parser = argparse.ArgumentParser(description='Prediksi segmentasi gambar menggunakan model U-Net')
+    parser = argparse.ArgumentParser(description='Prediksi segmentasi gambar menggunakan model U-Net dengan post-processing')
     parser.add_argument('--model', type=str, required=True, help='Path ke model terlatih (.h5)')
     parser.add_argument('--input', type=str, required=True, help='Path ke gambar input')
     parser.add_argument('--output', type=str, default='prediction_result.png', help='Path untuk menyimpan hasil segmentasi')
     parser.add_argument('--threshold', type=float, default=0.1, help='Threshold untuk validitas patch')
+    
+    parser.add_argument('--enable-postprocess', action='store_true', default=True, 
+                        help='Aktifkan post-processing (default: True)')
+    parser.add_argument('--min-area', type=int, default=100, 
+                        help='Area minimum komponen pixel (default: 100)')
+    parser.add_argument('--morph-kernel-size', type=int, default=11, 
+                        help='Ukuran pixel (default: 2)')
+    
     args = parser.parse_args()
 
     print(f"Memuat model dari {args.model}...")
     model = load_custom_model(args.model)
     print("Model berhasil dimuat")
 
-    segmented_image = predict_large_image(model, args.input, args.output, valid_threshold=args.threshold)
+    postprocess_params = {
+        'min_area': args.min_area,
+        'morph_kernel_size': args.morph_kernel_size,
+        'fill_holes': True,  # Selalu aktif
+        'smooth_boundaries': True  # Selalu aktif
+    }
+
+    segmented_image, label_map = predict_large_image(
+        model, args.input, args.output, 
+        valid_threshold=args.threshold,
+        enable_postprocess=args.enable_postprocess,
+        postprocess_params=postprocess_params
+    )
 
     color_list = [
         [167, 168, 167],  # ground
         [21, 194, 59],    # hutan
         [46, 15, 15],     # palmoil
         [237, 92, 14],    # urban
-        [102, 237, 69],   # vegetation
+        [102, 237, 69],   # vegetation  
     ]
     class_names = ['ground', 'hutan', 'palmoil', 'urban', 'vegetation']
-
-    label_map = rgb_to_label(segmented_image, color_list)
 
     tif_output_path = os.path.splitext(args.output)[0] + '.tif'
     save_geotiff(label_map, args.input, tif_output_path)
