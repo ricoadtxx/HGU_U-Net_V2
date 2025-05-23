@@ -53,10 +53,17 @@ def predict_large_image(model, image_path, output_path=None, patch_size=image_pa
             'fill_holes': True,
             'smooth_boundaries': True
         }
+
+    with rasterio.open(image_path) as src:
+        image = src.read([1, 2, 3])  # Ambil band 1, 2, 3 (anggap sebagai RGB)
+        image = np.transpose(image, (1, 2, 0))  # dari (C, H, W) ke (H, W, C)
+
+    if image is None or image.size == 0:
+        raise ValueError(f"Gagal membaca gambar dari: {image_path}")
     
-    image = cv2.imread(image_path)
-    if image is None:
-        raise ValueError(f"Gambar tidak ditemukan: {image_path}")
+    # image = cv2.imread(image_path)
+    # if image is None:
+    #     raise ValueError(f"Gambar tidak ditemukan: {image_path}")
 
     no_data_mask = create_nodata_mask(image)
 
